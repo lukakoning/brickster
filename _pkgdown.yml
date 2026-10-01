@@ -24,6 +24,7 @@ reference:
     contents:
       - db_host
       - db_token
+      - db_token_provider
       - db_wsid
       - db_read_netrc
       - db_current_user

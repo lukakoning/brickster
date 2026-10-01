@@ -17,7 +17,8 @@ db_request(endpoint, method, version = NULL, body = NULL, host, token, ...)
 
 \item{host}{Databricks host, defaults to \code{\link[=db_host]{db_host()}}.}
 
-\item{token}{Databricks token, defaults to \code{\link[=db_token]{db_token()}}.}
+\item{token}{Databricks bearer token, a \code{\link[=db_token_provider]{db_token_provider()}}, or \code{NULL}
+to use the configured authentication. Defaults to \code{\link[=db_token]{db_token()}}.}
 
 \item{...}{Parameters passed on to \code{\link[httr2:req_body]{httr2::req_body_json()}} when \code{body} is not \code{NULL}.}
 }

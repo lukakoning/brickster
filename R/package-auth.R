@@ -1,5 +1,148 @@
 # internal package functions for authentication
 
+#' Supply refreshable credentials to Databricks requests
+#'
+#' @description
+#' Use credentials managed by another package with brickster REST functions and
+#' the DBI backend. Each HTTP request obtains a current token from your callback,
+#' including requests created earlier with `perform_request = FALSE`.
+#'
+#' @param host A Databricks workspace hostname or HTTPS workspace URL.
+#' @param token A function with argument `force_refresh = FALSE` that returns
+#'   one non-empty bearer token string. It must check that its authorization is
+#'   still available and refresh expiring credentials. A rejected HTTP 401
+#'   with an `invalid_token` challenge requests a forced refresh before httr2's
+#'   single authentication retry.
+#'
+#' @details
+#' Providers are bound to one workspace. Callback errors stop the request;
+#' brickster never substitutes environment, CLI, or service-principal credentials.
+#' brickster does not cache the callback's tokens or manage its refresh credentials.
+#' Provider requests do not follow redirects.
+#'
+#' For a Shiny session managed by shinyOAuth, use [db_shiny_server()] and its
+#' `token_provider()` method. Keep the provider in the owning R process. Pass a
+#' fixed access token to background workers instead.
+#'
+#' @returns A `db_token_provider` suitable for the `token` argument of REST
+#'   functions and [DBI::dbConnect()].
+#' @family Databricks Authentication Helpers
+#' @export
+#' @examples
+#' provider <- db_token_provider("workspace.example.com", function(force_refresh = FALSE) {
+#'   "example-token"
+#' })
+#' db_sql_warehouse_list(host = "workspace.example.com", token = provider,
+#'   perform_request = FALSE)
+db_token_provider <- function(host, token) {
+  host <- db_auth_workspace_host(host)
+  if (
+    !is.function(token) ||
+      !any(c("force_refresh", "...") %in% names(formals(token)))
+  ) {
+    cli::cli_abort(
+      "{.arg token} must be a function accepting {.arg force_refresh}."
+    )
+  }
+  structure(list(host = host, token = token), class = "db_token_provider")
+}
+
+#' @export
+print.db_token_provider <- function(x, ...) {
+  cat("<db_token_provider>\n  Workspace:", x$host, "\n")
+  invisible(x)
+}
+
+db_auth_workspace_host <- function(host) {
+  if (
+    !is.character(host) || length(host) != 1L || is.na(host) || !nzchar(host)
+  ) {
+    cli::cli_abort(
+      "{.arg host} must be one Databricks workspace hostname or HTTPS URL."
+    )
+  }
+  url <- if (grepl("://", host, fixed = TRUE)) {
+    host
+  } else {
+    paste0("https://", host)
+  }
+  parsed <- httr2::url_parse(url)
+  if (
+    !identical(parsed$scheme, "https") ||
+      is.null(parsed$hostname) ||
+      !grepl("^[A-Za-z0-9][A-Za-z0-9.-]*$", parsed$hostname) ||
+      !is.null(parsed$port) ||
+      !is.null(parsed$username) ||
+      !is.null(parsed$password) ||
+      !parsed$path %in% c("", "/") ||
+      !is.null(parsed$query) ||
+      !is.null(parsed$fragment)
+  ) {
+    cli::cli_abort(
+      "{.arg host} must contain only a workspace hostname or HTTPS origin."
+    )
+  }
+  tolower(parsed$hostname)
+}
+
+db_check_token_host <- function(token, host) {
+  bound <- if (inherits(token, "db_token_provider")) {
+    token$host
+  } else {
+    attr(token, "brickster_host")
+  }
+  if (!is.null(bound) && !identical(bound, db_auth_workspace_host(host))) {
+    cli::cli_abort(
+      "These credentials belong to a different workspace; use their configured {.arg host}."
+    )
+  }
+  expires <- attr(token, "brickster_expires_at")
+  if (
+    !is.null(expires) &&
+      (!is.finite(expires) || expires <= as.numeric(Sys.time()) + 40)
+  ) {
+    cli::cli_abort(
+      "The query token is expiring; acquire a fresh token in the owning Shiny session."
+    )
+  }
+  invisible(NULL)
+}
+
+db_check_bearer_token <- function(token) {
+  if (
+    !is.character(token) ||
+      length(token) != 1L ||
+      is.na(token) ||
+      !grepl("^[A-Za-z0-9._~+/-]+=*$", token)
+  ) {
+    cli::cli_abort(
+      "The token callback must return one non-empty bearer token string."
+    )
+  }
+  invisible(NULL)
+}
+
+db_req_auth_token_provider <- function(req, host, provider) {
+  db_check_token_host(provider, host)
+  state <- new.env(parent = emptyenv())
+  state$force_refresh <- FALSE
+  httr2::req_oauth(
+    req = httr2::req_options(req, followlocation = FALSE),
+    flow = function() {
+      token <- provider$token(force_refresh = state$force_refresh)
+      db_check_bearer_token(token)
+      state$force_refresh <- FALSE
+      httr2::oauth_token(token)
+    },
+    flow_params = list(),
+    cache = list(
+      get = function() NULL,
+      set = function(token) invisible(NULL),
+      clear = function() state$force_refresh <- TRUE
+    )
+  )
+}
+
 db_host_url <- function(host) {
   if (!grepl("://", host, fixed = TRUE)) {
     host <- paste0("https://", host)

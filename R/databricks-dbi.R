@@ -11,6 +11,8 @@ NULL
 
 # S4 Class Definitions --------------------------------------------------------
 setClassUnion("characterOrNULL", c("character", "NULL"))
+methods::setOldClass("db_token_provider")
+setClassUnion("databricksCredential", c("character", "NULL", "db_token_provider"))
 
 #' DBI Driver for Databricks
 #' @export
@@ -24,7 +26,7 @@ setClass(
   slots = list(
     warehouse_id = "character",
     host = "character",
-    token = "characterOrNULL",
+    token = "databricksCredential",
     catalog = "character",
     schema = "character",
     staging_volume = "character",
@@ -95,7 +97,9 @@ setMethod("show", "DatabricksDriver", function(object) {
 #' (default: 300)
 #' @param show_progress If `TRUE`, show progress updates by default for DBI
 #'   queries, dbplyr collection, and table writes (default: `TRUE`)
-#' @param token Authentication token (defaults to db_token())
+#' @param token Authentication token, a [db_token_provider()], or `NULL` to use
+#'   configured authentication (defaults to [db_token()]). A provider remains
+#'   attached to the connection so subsequent requests obtain current tokens.
 #' @param host Databricks workspace host (defaults to db_host())
 #' @param ... Additional arguments (ignored)
 #' @returns A DatabricksConnection object

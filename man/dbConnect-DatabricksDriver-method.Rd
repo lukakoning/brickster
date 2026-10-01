@@ -47,7 +47,9 @@ connections when fetching query results (default: 30)}
 \item{show_progress}{If \code{TRUE}, show progress updates by default for DBI
 queries, dbplyr collection, and table writes (default: \code{TRUE})}
 
-\item{token}{Authentication token (defaults to db_token())}
+\item{token}{Authentication token, a \code{\link[=db_token_provider]{db_token_provider()}}, or \code{NULL} to use
+configured authentication (defaults to \code{\link[=db_token]{db_token()}}). A provider remains
+attached to the connection so subsequent requests obtain current tokens.}
 
 \item{host}{Databricks workspace host (defaults to db_host())}
 

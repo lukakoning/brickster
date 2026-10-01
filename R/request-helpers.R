@@ -7,7 +7,8 @@
 #' @param version String, API version of endpoint. E.g. `2.0`.
 #' @param body Named list, passed to [httr2::req_body_json()].
 #' @param host Databricks host, defaults to [db_host()].
-#' @param token Databricks token, defaults to [db_token()].
+#' @param token Databricks bearer token, a [db_token_provider()], or `NULL`
+#'   to use the configured authentication. Defaults to [db_token()].
 #' @param ... Parameters passed on to [httr2::req_body_json()] when `body` is not `NULL`.
 #'
 #' @family Request Helpers
@@ -44,7 +45,10 @@ db_request <- function(
 
   # if token is present use directly
   # otherwise resolve the configured credential provider
-  if (!is.null(token)) {
+  if (inherits(token, "db_token_provider")) {
+    req <- db_req_auth_token_provider(req, host, token)
+  } else if (!is.null(token)) {
+    db_check_token_host(token, host)
     req <- httr2::req_auth_bearer_token(req = req, token = token)
   } else {
     auth_type <- db_auth_type()
