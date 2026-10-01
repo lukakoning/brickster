@@ -12,7 +12,8 @@ Description: Collection of utilities that improve using 'Databricks' from
     support, quality of life functions to make 'Databricks' simpler to
     use.
 License: Apache License (>= 2)
-URL: https://github.com/databrickslabs/brickster
+URL: https://github.com/databrickslabs/brickster,
+    https://databrickslabs.github.io/brickster/
 Depends:
     R (>= 4.1.0)
 Imports:
@@ -43,7 +44,11 @@ Suggests:
     huxtable,
     knitr,
     magick,
+    mirai (>= 2.5.1),
+    promises,
     rmarkdown,
+    shiny (>= 1.8.1),
+    shinyOAuth (>= 0.6.1),
     testthat (>= 3.3.0),
     withr
 VignetteBuilder: 

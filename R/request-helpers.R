@@ -24,6 +24,13 @@ db_request <- function(
   token,
   ...
 ) {
+  if (
+    inherits(token, "db_token_provider") ||
+      !is.null(attr(token, "brickster_host"))
+  ) {
+    db_check_token_host(token, host)
+    host <- db_auth_workspace_host(host)
+  }
   url <- structure(
     list(
       scheme = "https",

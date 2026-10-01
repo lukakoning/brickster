@@ -44,7 +44,9 @@ db_sql_warehouse_list(host = "workspace.example.com", token = provider,
 \seealso{
 Other Databricks Authentication Helpers: 
 \code{\link{db_host}()},
+\code{\link{db_oauth_provider}()},
 \code{\link{db_read_netrc}()},
+\code{\link{db_shiny}},
 \code{\link{db_token}()},
 \code{\link{db_wsid}()}
 }
