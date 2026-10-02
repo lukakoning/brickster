@@ -38,6 +38,7 @@ Imports:
     utils
 Suggests:
     arrow,
+    bslib (>= 0.7.0),
     grid,
     htmltools,
     huxtable,

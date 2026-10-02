@@ -85,7 +85,7 @@ ui <- db_shiny_ui(
         "Volume CSV" = "volume"
       )
     ),
-    actionButton("load", "Load data"),
+    bslib::input_task_button("load", "Load data"),
     tableOutput("data")
   )
 )
@@ -93,7 +93,7 @@ ui <- db_shiny_ui(
 server <- function(input, output, session) {
   auth <- db_shiny_server("auth", config, auto_redirect = FALSE)
   query <- ExtendedTask$new(function(token_promise, generation, source) {
-    promises::then(token_promise, function(token) {
+    pending <- promises::then(token_promise, function(token) {
       data <- mirai::mirai(
         {
           library(brickster)
@@ -107,11 +107,29 @@ server <- function(input, output, session) {
         sql = sql,
         volume_file = volume_file
       )
-      promises::then(promises::as.promise(data), function(data) {
-        list(generation = generation, source = source, data = data)
-      })
+      promises::as.promise(data)
     })
-  })
+    promises::then(
+      pending,
+      onFulfilled = function(data) {
+        list(
+          generation = generation,
+          source = source,
+          data = data,
+          error = NULL
+        )
+      },
+      onRejected = function(error) {
+        list(
+          generation = generation,
+          source = source,
+          data = NULL,
+          error = error
+        )
+      }
+    )
+  }) |>
+    bslib::bind_task_button("load")
 
   observeEvent(input$login, auth$login(), ignoreInit = TRUE)
   observeEvent(input$logout, auth$logout(), ignoreInit = TRUE)
@@ -119,6 +137,7 @@ server <- function(input, output, session) {
     input$load,
     {
       req(auth$ready())
+      req(!identical(query$status(), "running"))
       query$invoke(
         auth$access_token(async = TRUE),
         auth$generation(),
@@ -140,6 +159,9 @@ server <- function(input, output, session) {
     result <- query$result()
     req(identical(result$generation, auth$generation()))
     req(identical(result$source, input$source))
+    if (!is.null(result$error)) {
+      stop(result$error)
+    }
     head(result$data, 100)
   })
 }

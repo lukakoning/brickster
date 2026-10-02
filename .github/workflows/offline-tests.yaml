@@ -65,4 +65,4 @@ jobs:
           needs: check
 
       - name: Run Shiny and credential tests without network access
-        run: sudo --preserve-env unshare --net -- "$(command -v Rscript)" -e 'testthat::test_local(filter = "shiny-auth|token-provider", reporter = "summary")'
+        run: sudo --preserve-env unshare --net -- "$(command -v Rscript)" -e 'testthat::test_local(filter = "shiny|token-provider", reporter = "summary")'
