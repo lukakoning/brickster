@@ -99,6 +99,26 @@ For the optional volume example, add the path to a CSV file the user can read:
 APP_VOLUME_FILE=/Volumes/main/analytics/files/sales.csv
 ```
 
+## Using the user's credentials
+
+Inside `server()`, `db_shiny_server()` returns the user's authorization as
+`auth`. Existing brickster functions keep their usual `host` and `token`
+arguments. For a call in the Shiny session, pass the refreshable token provider:
+
+```{r}
+db_uc_catalogs_list(host = auth$host, token = auth$token_provider())
+```
+
+This call runs in the Shiny process. For queries and other operations that may
+take time, use `db_shiny_task()` as in the complete app below. It obtains a
+fixed token asynchronously, passes it to a background worker, and returns the
+result to the current user's session. The worker uses ordinary brickster
+functions with that token.
+
+The `async = TRUE` default in `db_shiny_server()` offloads sign-in and token
+refresh. It does not make SQL queries, DBI calls, or other data operations
+asynchronous; `db_shiny_task()` handles those operations.
+
 ## A complete app
 
 Save this code as `app.R`. SQL is the first option; the others demonstrate DBI,
@@ -279,8 +299,8 @@ sales |>
 ```
 
 Place this code in a server-side helper function so `on.exit()` closes the
-connection. Calls in the Shiny process are synchronous; use the `ExtendedTask`
-pattern from the full app for queries that may take time. Create and close the
+connection. Calls in the Shiny process are synchronous; use `db_shiny_task()`
+from the full app for queries that may take time. Create and close the
 DBI connection inside the worker using the supplied fixed token.
 
 For filters from Shiny inputs, pass query parameters rather than constructing
@@ -386,10 +406,12 @@ Databricks accepted the statement. Do not resubmit automatically.
 login's `generation()` unchanged. Signing out or signing in again invalidates
 previous providers; obtain a new provider after the next login.
 
-For a background task, obtain the token asynchronously in the Shiny process,
-then send the fixed token and ordinary query arguments to mirai. The example
-checks `generation()` before showing results, so a result from an earlier login
-does not appear after the user signs out or changes login.
+`db_shiny_task()` obtains a fixed token asynchronously before sending the
+operation's arguments to mirai. It checks `generation()` before displaying
+results or errors. If you build your own `ExtendedTask`, obtain credentials
+with `auth$access_token(async = TRUE)`, wait for the returned promise, and pass
+only the fixed token and operation arguments to the worker. Check the captured
+login's `generation()` before displaying either a result or an error.
 
 `min_valid_for` is the minimum token lifetime needed to start an operation,
 not a query timeout. Workers cannot refresh tokens. For queries that may outlast

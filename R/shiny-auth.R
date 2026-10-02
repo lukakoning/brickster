@@ -51,7 +51,9 @@ db_oauth_provider <- function(
 #' @param ui Your Shiny UI. This can be a UI object or a function.
 #' @param auto_redirect Whether to start sign-in automatically.
 #' @param async Whether to offload OAuth network operations. Default `TRUE`;
-#'   configure mirai daemons or a future plan before starting your app.
+#'   configure mirai daemons or a future plan before starting your app. This
+#'   setting does not offload SQL, DBI, or REST calls; use [db_shiny_task()] for
+#'   background data operations.
 #' @param reauth_after_seconds Time until a new login is required, default
 #'   eight hours. Refresh alone does not extend this authorization lifetime.
 #'
@@ -68,12 +70,15 @@ db_oauth_provider <- function(
 #' requests and becomes unusable after logout, a replacement login, or session
 #' closure. It must remain in the owning Shiny process and reactive context.
 #'
-#' For background queries, call `access_token(async = TRUE)` in the Shiny
-#' process and pass the resulting fixed token to a `shiny::ExtendedTask` using
-#' mirai. The token retains its workspace binding and expiry. Workers cannot
-#' refresh it. Before displaying a result, compare the login's captured
-#' `generation()` with the current value. Logout invalidates providers and
-#' pending token acquisition; it does not cancel a statement already submitted.
+#' For background queries, use [db_shiny_task()]. It obtains a fixed token
+#' asynchronously, runs the operation with mirai, and checks the current login
+#' before displaying results or errors. For a custom `shiny::ExtendedTask`, call
+#' `access_token(async = TRUE)` in the Shiny process and pass the resolved fixed
+#' token to the worker. The token retains its workspace binding and expiry;
+#' workers cannot refresh it. Compare the captured `generation()` with the
+#' current value before displaying either results or errors. Logout invalidates
+#' providers and pending token acquisition; it does not cancel a statement
+#' already submitted.
 #' See `vignette("shiny", package = "brickster")` for a complete app.
 #'
 #' @returns
