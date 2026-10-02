@@ -443,3 +443,113 @@ test_that("configuration rejects an insufficient worker token lifetime", {
     cran = TRUE
   )
 })
+
+test_that("child modules share one login and discard their results on logout", {
+  local_databricks_discovery()
+  skip_if_not_installed("shiny", "1.8.1")
+  skip_if_not_installed("mirai", "2.5.1")
+  skip_if_not_installed("promises")
+  config <- shiny_test_config()
+  withr::local_options(shinyOAuth.skip_browser_token = TRUE)
+  state <- new.env(parent = emptyenv())
+  state$tokens <- character()
+  local_mocked_bindings(
+    mirai = function(.expr, .fun, .host, .token, .inputs, .compute) {
+      state$tokens <- c(state$tokens, as.character(.token))
+      promises::promise_resolve(.inputs$value)
+    },
+    .package = "mirai"
+  )
+  data_module <- function(id, auth) {
+    shiny::moduleServer(id, function(input, output, session) {
+      list(
+        query = db_shiny_task(auth, function(host, token, value) value),
+        provider = function() auth$token_provider()
+      )
+    })
+  }
+  shiny::testServer(
+    function(input, output, session) {
+      oauth <- shinyOAuth::oauth_module_server(
+        "auth",
+        config$client,
+        auto_redirect = FALSE
+      )
+      auth <- db_shiny_session(oauth, config)
+      first <- data_module("first", auth)
+      second <- data_module("second", auth)
+    },
+    {
+      oauth$token <- shiny_test_token()
+      session$flushReact()
+      first$query$invoke(value = "first module")
+      second$query$invoke(value = "second module")
+      deadline <- Sys.time() + 10
+      while (
+        any(c(first$query$status(), second$query$status()) == "running") &&
+          Sys.time() < deadline
+      ) {
+        later::run_now(0.01)
+        session$flushReact()
+      }
+      expect_identical(first$query$result(), "first module")
+      expect_identical(second$query$result(), "second module")
+      expect_identical(state$tokens, c("alice", "alice"))
+      provider <- first$provider()
+      oauth$token <- shiny_test_token("alice-refreshed")
+      session$flushReact()
+      expect_identical(as.character(provider$token()), "alice-refreshed")
+      expect_identical(first$query$result(), "first module")
+      auth$logout()
+      session$flushReact()
+      purrr::walk(list(first$query, second$query), function(query) {
+        expect_identical(query$status(), "initial")
+        expect_s3_class(
+          tryCatch(query$result(), error = identity),
+          "shiny.silent.error"
+        )
+      })
+      expect_error(provider$token(), "authorization is no longer available")
+    }
+  )
+})
+
+test_that("an existing shinyOAuth connection supplies login-bound credentials", {
+  local_databricks_discovery()
+  config <- shiny_test_config()
+  withr::local_options(shinyOAuth.skip_browser_token = TRUE)
+  shiny::testServer(
+    function(input, output, session) {
+      oauth <- shinyOAuth::oauth_module_server(
+        "auth",
+        config$client,
+        auto_redirect = FALSE
+      )
+    },
+    {
+      oauth$token <- shiny_test_token()
+      session$flushReact()
+      connection <- shiny::req(oauth$connection())
+      provider <- db_token_provider(
+        config$host,
+        function(force_refresh = FALSE) {
+          connection$access_token(
+            required_scopes = "sql",
+            min_valid_for = 300,
+            force_refresh = force_refresh
+          )
+        }
+      )
+      expect_identical(provider$token(), "alice")
+      oauth$token <- shiny_test_token("alice-refreshed")
+      session$flushReact()
+      expect_identical(provider$token(), "alice-refreshed")
+      oauth$logout()
+      oauth$token <- shiny_test_token("bob")
+      session$flushReact()
+      error <- tryCatch(provider$token(), error = identity)
+      expect_s3_class(error, "shinyOAuth_access_error")
+      expect_identical(error$context$reason, "authorization_unavailable")
+    }
+  )
+})

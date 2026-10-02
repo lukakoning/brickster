@@ -277,6 +277,55 @@ The SQL and DBI examples use `INLINE` results for small tables. Use
 `disposition = "EXTERNAL_LINKS"` for larger results. brickster fetches the
 temporary result links without sending Databricks credentials to cloud storage.
 
+## Using Shiny modules
+
+Create the authorization once in the parent server and pass `auth` to modules
+that need data. Each module can create its own task and controls while sharing
+the user's login. For example, replace the full app's UI and server definitions
+with the following. Keep its package setup, mirai daemons, `config`, `warehouse`,
+and final `shinyApp()` call.
+
+```{r modules}
+data_ui <- function(id, title) {
+  ns <- NS(id)
+  tagList(
+    h3(title),
+    bslib::input_task_button(ns("load"), "Load data"),
+    tableOutput(ns("data"))
+  )
+}
+
+data_server <- function(id, auth, warehouse, statement) {
+  moduleServer(id, function(input, output, session) {
+    query <- db_shiny_task(auth, db_sql_query, button = "load")
+    observeEvent(input$load, {
+      query$invoke(
+        warehouse_id = warehouse, statement = statement,
+        disposition = "INLINE", show_progress = FALSE
+      )
+    }, ignoreInit = TRUE)
+    output$data <- renderTable(query$result())
+  })
+}
+
+ui <- db_shiny_ui("auth", config, fluidPage(
+  actionButton("login", "Sign in"),
+  actionButton("logout", "Sign out"),
+  data_ui("identity", "Current user"),
+  data_ui("date", "Current date")
+))
+server <- function(input, output, session) {
+  auth <- db_shiny_server("auth", config, auto_redirect = FALSE)
+  observeEvent(input$login, auth$login(), ignoreInit = TRUE)
+  observeEvent(input$logout, auth$logout(), ignoreInit = TRUE)
+  data_server("identity", auth, warehouse, "SELECT current_user() AS user")
+  data_server("date", auth, warehouse, "SELECT current_date() AS today")
+}
+```
+
+Signing out clears results in both modules. Token refresh keeps the same login,
+so modules can continue making requests without another sign-in.
+
 ## DBI and dbplyr
 
 The worker above uses a fixed token for one operation. For synchronous code
@@ -399,6 +448,37 @@ using the same login checks. These functions return the API response lists;
 
 If submission itself fails before returning an ID, the app cannot tell whether
 Databricks accepted the statement. Do not resubmit automatically.
+
+## Adapting an existing shinyOAuth app
+
+If your app already uses `shinyOAuth::oauth_module_server()`, you can keep that
+setup. Configure its client with the Databricks provider from
+`db_oauth_provider()`, the registered callback URL, and the API and identity
+scopes described above. The module's `connection()` API provides credentials
+that can be adapted with `db_token_provider()`.
+
+For example, inside reactive code after sign-in, where `oauth` is the existing
+module's return value:
+
+```{r existing-oauth}
+connection <- req(oauth$connection())
+provider <- db_token_provider(host, function(force_refresh = FALSE) {
+  connection$access_token(
+    required_scopes = "sql", min_valid_for = 300,
+    force_refresh = force_refresh
+  )
+})
+db_sql_query(
+  warehouse_id = warehouse, statement = "SELECT current_user() AS user",
+  host = host, token = provider, disposition = "INLINE", show_progress = FALSE
+)
+```
+
+The provider follows that login through refresh and becomes unusable after
+logout. Obtain a new connection and provider for a new login. This example runs
+synchronously in the session; for your own background task, obtain a fixed
+token asynchronously before passing it to the worker. Use `"all-apis"` for
+operations beyond SQL. This adapter also requires development shinyOAuth.
 
 ## Refresh, background tasks, and deployment
 

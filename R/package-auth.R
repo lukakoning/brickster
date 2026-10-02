@@ -282,7 +282,9 @@ db_read_netrc <- function(path = "~/.netrc") {
 #' @name auth_params
 #' @keywords internal
 #' @param host Databricks workspace URL, defaults to calling [db_host()].
-#' @param token Databricks workspace token, defaults to calling [db_token()].
+#' @param token Databricks bearer token or a [db_token_provider()], defaults to
+#'   calling [db_token()]. For a signed-in Shiny user's data, pass the
+#'   `token_provider()` returned by [db_shiny_server()].
 #'
 NULL
 

@@ -9,7 +9,9 @@ open_workspace(host = db_host(), token = db_token(), name = NULL)
 \arguments{
 \item{host}{Databricks workspace URL, defaults to calling \code{\link[=db_host]{db_host()}}.}
 
-\item{token}{Databricks workspace token, defaults to calling \code{\link[=db_token]{db_token()}}.}
+\item{token}{Databricks bearer token or a \code{\link[=db_token_provider]{db_token_provider()}}, defaults to
+calling \code{\link[=db_token]{db_token()}}. For a signed-in Shiny user's data, pass the
+\code{token_provider()} returned by \code{\link[=db_shiny_server]{db_shiny_server()}}.}
 
 \item{name}{Desired name to assign the connection}
 }

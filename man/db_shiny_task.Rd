@@ -49,7 +49,7 @@ that have not started or are running. It checks the current login before
 returning data or raising an operation error.
 }
 \seealso{
-Other Databricks Authentication Helpers: 
+Other Databricks Authentication Helpers:
 \code{\link{db_host}()},
 \code{\link{db_oauth_provider}()},
 \code{\link{db_read_netrc}()},
