@@ -43,6 +43,7 @@ Suggests:
     htmltools,
     huxtable,
     knitr,
+    later,
     magick,
     mirai (>= 2.5.1),
     promises,
