@@ -327,3 +327,182 @@ db_shiny_session <- function(auth, config) {
     logout = function() auth$logout()
   )
 }
+
+#' Run Databricks operations in the background of a Shiny app
+#'
+#' @description
+#' Create a Shiny `ExtendedTask` that obtains the signed-in user's credentials
+#' asynchronously and runs your function with mirai. Results and errors from an
+#' earlier login are hidden. Repeated invocations while busy are ignored.
+#'
+#' @param auth Session helpers returned by [db_shiny_server()].
+#' @param fun A function accepting `host` and `token`, such as [db_sql_query()].
+#'   For a custom function, pass its other inputs through `invoke()` and use
+#'   qualified package calls such as `brickster::db_sql_query()`. Custom functions
+#'   run with a base environment, without variables from the app's environment.
+#' @param button Optional ID of a `bslib::input_task_button()` in this module.
+#' @param .compute Optional mirai compute profile. Configure its daemons before
+#'   starting the app; `NULL` uses the default profile.
+#'
+#' @details
+#' Call once inside `server()` or a module. Configure `mirai::daemons()` outside
+#' `server()`. `fun` receives only the workspace host, a fixed access token, and
+#' the arguments passed to `invoke()`. A worker cannot refresh the token.
+#' Already submitted Databricks statements continue after logout.
+#'
+#' `invoke()` must be called in the owning session's reactive context. It checks
+#' sign-in, snapshots the arguments and login, and starts asynchronous token
+#' acquisition. It does not queue a second operation while one is running.
+#' `result()` follows `shiny::ExtendedTask$result()` behavior for operations
+#' that have not started or are running. It checks the current login before
+#' returning data or raising an operation error.
+#'
+#' @returns A list with three methods:
+#' * `invoke(...)`: returns `TRUE` invisibly when started, or `FALSE` when busy.
+#'   Supply arguments for `fun`, excluding `host` and `token`.
+#' * `result()`: returns the operation's value in a reactive output. It hides
+#'   outcomes from earlier logins and raises errors from the current operation.
+#' * `status()`: reactive status, `"initial"`, `"running"`, `"success"`, or
+#'   `"error"`. Completed outcomes from an earlier login report `"initial"`.
+#' @family Databricks Authentication Helpers
+#' @export
+db_shiny_task <- function(auth, fun, button = NULL, .compute = NULL) {
+  rlang::check_installed("shiny", version = "1.8.1")
+  rlang::check_installed("mirai", version = "2.5.1")
+  rlang::check_installed("promises")
+  session <- shiny::getDefaultReactiveDomain()
+  if (is.null(session)) {
+    cli::cli_abort("Call {.fn db_shiny_task} inside a Shiny server session.")
+  }
+  if (
+    !is.list(auth) ||
+      !all(purrr::map_lgl(
+        auth[c("ready", "generation", "access_token")],
+        is.function
+      ))
+  ) {
+    cli::cli_abort("{.arg auth} must be returned by {.fn db_shiny_server}.")
+  }
+  host <- db_auth_workspace_host(auth$host)
+  if (!is.function(fun) || is.primitive(fun)) {
+    cli::cli_abort(
+      "{.arg fun} must be a function accepting {.arg host} and {.arg token}."
+    )
+  }
+  if (
+    !all(c("host", "token") %in% names(formals(fun))) &&
+      !"..." %in% names(formals(fun))
+  ) {
+    cli::cli_abort("{.arg fun} must accept {.arg host} and {.arg token}.")
+  }
+  if (!isNamespace(environment(fun))) {
+    environment(fun) <- baseenv()
+  }
+  if (!is.null(button)) {
+    rlang::check_installed("bslib", version = "0.7.0")
+    if (!rlang::is_string(button) || !nzchar(button)) {
+      cli::cli_abort("{.arg button} must be one task-button ID or NULL.")
+    }
+  }
+  if (
+    !is.null(.compute) && (!rlang::is_string(.compute) || !nzchar(.compute))
+  ) {
+    cli::cli_abort("{.arg .compute} must be one mirai compute profile or NULL.")
+  }
+  check_session <- function() {
+    caller <- shiny::getDefaultReactiveDomain()
+    if (
+      isTRUE(session$isClosed()) ||
+        is.null(caller) ||
+        !identical(session$rootScope(), caller$rootScope())
+    ) {
+      cli::cli_abort("Use this task in its owning Shiny session.")
+    }
+  }
+  current <- function(generation) {
+    !isTRUE(session$isClosed()) &&
+      identical(shiny::isolate(auth$generation()), generation)
+  }
+  task <- shiny::ExtendedTask$new(function(token_promise, generation, args) {
+    pending <- promises::then(token_promise, function(token) {
+      check_session()
+      if (!current(generation)) {
+        cli::cli_abort("The authorization ended before the operation started.")
+      }
+      db_check_bearer_token(token)
+      db_check_token_host(token, host)
+      operation <- quote(
+        do.call(.fun, c(list(host = .host, token = .token), .inputs))
+      )
+      work <- rlang::inject(
+        mirai::mirai(
+          !!operation,
+          .fun = fun,
+          .host = host,
+          .token = token,
+          .inputs = args,
+          .compute = .compute
+        )
+      )
+      promises::as.promise(work)
+    })
+    promises::then(
+      pending,
+      function(value) {
+        list(generation = generation, value = value, error = NULL)
+      },
+      function(error) list(generation = generation, value = NULL, error = error)
+    )
+  })
+  if (!is.null(button)) {
+    bslib::bind_task_button(task, button)
+  }
+  list(
+    invoke = function(...) {
+      check_session()
+      if (identical(shiny::isolate(task$status()), "running")) {
+        return(invisible(FALSE))
+      }
+      shiny::req(auth$ready())
+      args <- list(...)
+      if (any(c("host", "token") %in% names(args))) {
+        cli::cli_abort(
+          "The task supplies {.arg host} and {.arg token}; pass only operation arguments."
+        )
+      }
+      generation <- auth$generation()
+      token <- tryCatch(
+        auth$access_token(async = TRUE),
+        error = promises::promise_reject
+      )
+      task$invoke(promises::promise_resolve(token), generation, args)
+      invisible(TRUE)
+    },
+    result = function() {
+      check_session()
+      shiny::req(auth$ready())
+      generation <- auth$generation()
+      outcome <- task$result()
+      shiny::req(identical(outcome$generation, generation))
+      if (!is.null(outcome$error)) {
+        stop(outcome$error)
+      }
+      outcome$value
+    },
+    status = function() {
+      check_session()
+      generation <- auth$generation()
+      status <- task$status()
+      if (identical(status, "success")) {
+        outcome <- task$result()
+        if (!identical(outcome$generation, generation)) {
+          return("initial")
+        }
+        if (!is.null(outcome$error)) {
+          return("error")
+        }
+      }
+      status
+    }
+  )
+}

@@ -27,6 +27,7 @@ reference:
       - db_token_provider
       - db_oauth_provider
       - db_shiny
+      - db_shiny_task
       - db_wsid
       - db_read_netrc
       - db_current_user

@@ -65,7 +65,6 @@ read_data <- function(source, host, token, warehouse, sql, volume_file) {
     }
   )
 }
-environment(read_data) <- baseenv()
 
 ui <- db_shiny_ui(
   "auth",
@@ -92,57 +91,24 @@ ui <- db_shiny_ui(
 
 server <- function(input, output, session) {
   auth <- db_shiny_server("auth", config, auto_redirect = FALSE)
-  query <- ExtendedTask$new(function(token_promise, generation, source) {
-    pending <- promises::then(token_promise, function(token) {
-      data <- mirai::mirai(
-        {
-          library(brickster)
-          read_data(source, host, token, warehouse, sql, volume_file)
-        },
-        read_data = read_data,
-        source = source,
-        host = config$host,
-        token = token,
-        warehouse = warehouse,
-        sql = sql,
-        volume_file = volume_file
-      )
-      promises::as.promise(data)
-    })
-    promises::then(
-      pending,
-      onFulfilled = function(data) {
-        list(
-          generation = generation,
-          source = source,
-          data = data,
-          error = NULL
-        )
-      },
-      onRejected = function(error) {
-        list(
-          generation = generation,
-          source = source,
-          data = NULL,
-          error = error
-        )
-      }
-    )
-  }) |>
-    bslib::bind_task_button("load")
+  query <- db_shiny_task(auth, read_data, button = "load")
+  loaded_source <- reactiveVal(NULL)
 
   observeEvent(input$login, auth$login(), ignoreInit = TRUE)
   observeEvent(input$logout, auth$logout(), ignoreInit = TRUE)
   observeEvent(
     input$load,
     {
-      req(auth$ready())
-      req(!identical(query$status(), "running"))
-      query$invoke(
-        auth$access_token(async = TRUE),
-        auth$generation(),
-        input$source
-      )
+      if (
+        query$invoke(
+          source = input$source,
+          warehouse = warehouse,
+          sql = sql,
+          volume_file = volume_file
+        )
+      ) {
+        loaded_source(input$source)
+      }
     },
     ignoreInit = TRUE
   )
@@ -155,14 +121,8 @@ server <- function(input, output, session) {
     paste("Signed in:", if (is.null(claims$email)) claims$sub else claims$email)
   })
   output$data <- renderTable({
-    req(auth$ready())
-    result <- query$result()
-    req(identical(result$generation, auth$generation()))
-    req(identical(result$source, input$source))
-    if (!is.null(result$error)) {
-      stop(result$error)
-    }
-    head(result$data, 100)
+    req(identical(loaded_source(), input$source))
+    head(query$result(), 100)
   })
 }
 

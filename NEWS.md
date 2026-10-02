@@ -1,5 +1,6 @@
 # brickster (development version)
 
+-   `db_shiny_task()` runs existing brickster functions with mirai and Shiny `ExtendedTask`, obtains user credentials asynchronously, and checks the current login before displaying results or errors.
 -   `db_oauth_provider()` discovers Databricks OAuth endpoints. `db_shiny_config()`, `db_shiny_ui()`, and `db_shiny_server()` use each Shiny user's authorization for SQL and REST requests, with refreshable DBI credentials and asynchronous token acquisition for background queries. The session helpers currently require development shinyOAuth (0.6.1.9000 or later).
 -   `db_token_provider()` supplies workspace-bound, refreshable external credentials to REST requests and DBI connections. Provider errors stop requests without falling back to other authentication.
 

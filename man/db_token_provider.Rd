@@ -47,6 +47,7 @@ Other Databricks Authentication Helpers:
 \code{\link{db_oauth_provider}()},
 \code{\link{db_read_netrc}()},
 \code{\link{db_shiny}},
+\code{\link{db_shiny_task}()},
 \code{\link{db_token}()},
 \code{\link{db_wsid}()}
 }

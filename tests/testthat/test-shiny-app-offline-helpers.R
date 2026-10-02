@@ -1,7 +1,7 @@
 shiny_example_server <- function() {
   app <- new.env(parent = environment(db_shiny_server))
   purrr::walk(
-    c("ExtendedTask", "observeEvent", "renderText", "renderTable", "req"),
+    c("reactiveVal", "observeEvent", "renderText", "renderTable", "req"),
     function(name) app[[name]] <- getExportedValue("shiny", name)
   )
   app$config <- list(host = "workspace.example.com")
@@ -41,6 +41,7 @@ test_that("the example does not queue repeated load clicks", {
   local_mocked_bindings(
     db_shiny_server = function(...) {
       list(
+        host = "workspace.example.com",
         ready = function() TRUE,
         generation = function() "login-one",
         identity = function() list(id_token_claims = list(sub = "alice")),
@@ -67,7 +68,7 @@ test_that("the example does not queue repeated load clicks", {
     state$resolve(data.frame(user = "alice"))
     shiny_app_tick(session, function() query$status() == "success")
     expect_identical(state$dispatches, 1L)
-    expect_identical(query$result()$data$user, "alice")
+    expect_identical(query$result()$user, "alice")
   })
 })
 
@@ -81,6 +82,7 @@ test_that("the example suppresses failed operations from a previous login", {
   local_mocked_bindings(
     db_shiny_server = function(...) {
       list(
+        host = "workspace.example.com",
         ready = function() TRUE,
         generation = function() login(),
         identity = function() list(id_token_claims = list(sub = "alice")),
@@ -100,10 +102,9 @@ test_that("the example suppresses failed operations from a previous login", {
     shiny_app_tick(session, function() !is.null(state$reject))
     login("login-two")
     state$reject(simpleError("Details from the old user's query"))
-    shiny_app_tick(session, function() query$status() == "success")
+    shiny_app_tick(session, function() query$status() == "initial")
     error <- tryCatch(output$data, error = identity)
     expect_s3_class(error, "shiny.silent.error")
     expect_identical(conditionMessage(error), "")
-    expect_identical(query$result()$generation, "login-one")
   })
 })
