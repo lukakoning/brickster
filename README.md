@@ -47,6 +47,15 @@ options(
 
 ## Usage
 
+### Shiny apps with user authorization
+
+`db_shiny_config()`, `db_shiny_ui()`, and `db_shiny_server()` connect each
+signed-in user's Databricks authorization to SQL, DBI, and REST requests.
+Databricks applies the user's existing data permissions. See the
+[complete Shiny app](vignettes/shiny.Rmd), including background queries with
+`ExtendedTask` and mirai. The session helpers currently require development
+shinyOAuth (0.6.1.9000 or later).
+
 ### `{DBI}` Backend
 
 ``` r

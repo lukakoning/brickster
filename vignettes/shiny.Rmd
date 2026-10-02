@@ -1,0 +1,340 @@
+---
+title: "Shiny apps with Databricks data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Shiny apps with Databricks data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+## Introduction
+
+brickster can query Databricks SQL warehouses, connect through DBI and dbplyr,
+browse Unity Catalog, and read files from volumes. You can use these functions
+in a Shiny app with a regular connection, such as the app's service principal.
+In that case, requests use the permissions of that connection.
+
+The Shiny helpers described here instead use each signed-in user's Databricks
+authorization. Warehouse permissions, Unity Catalog grants, row filters, and
+column masks determine what the user can access. Your app can use the permissions
+you already manage in Databricks without maintaining another set of data-access
+rules in Shiny.
+
+shinyOAuth handles sign-in and token refresh. brickster supplies the Databricks
+provider and connects those credentials to its SQL, DBI, and REST functions.
+The example below runs data operations in background R processes with Shiny's
+`ExtendedTask` and mirai, so the app stays responsive while a query runs.
+
+## Setup
+
+### Packages
+
+Use a version of brickster containing the Shiny helpers. The helpers currently
+need development shinyOAuth, because CRAN 0.6.1 does not yet provide its
+`connection()` and `access_token()` APIs. Install shinyOAuth from GitHub:
+
+```{r}
+install.packages(c("pak", "shiny", "promises", "mirai"))
+pak::pak("lukakoning/shinyOAuth")
+```
+
+Use Shiny 1.8.1 or later. brickster's SQL backend uses the Databricks Statement
+Execution API; this example does not require an ODBC driver.
+
+### Register the app
+
+Ask a Databricks account administrator to register a custom OAuth application
+in the account console under Settings, App connections. Register the exact
+callback URL, for example `http://localhost:8080/callback` for local development
+or `https://your-app.example/callback` when deployed. Copy its client ID and,
+for a confidential application, its client secret.
+
+Enable the SQL scope for an app that only queries a warehouse. The example also
+browses catalogs and reads a volume file, so enable All APIs for those options.
+Identity scopes and `offline_access` allow sign-in and token refresh. See
+[Databricks OAuth application setup](https://learn.microsoft.com/en-us/azure/databricks/integrations/enable-disable-oauth).
+
+Each user needs access to the workspace and the resources used by the app.
+For SQL, that includes `CAN USE` on the warehouse, `USE CATALOG`, `USE SCHEMA`,
+and `SELECT` on the relevant tables or views. Databricks checks these permissions
+when the user's query runs.
+
+### App settings
+
+Add the following settings to `.Renviron`, then restart R. Use the workspace
+hostname and a SQL warehouse ID from its connection details:
+
+```text
+DATABRICKS_HOST=your-workspace.cloud.databricks.com
+DATABRICKS_CLIENT_ID=your-registered-client-id
+DATABRICKS_CLIENT_SECRET=your-registered-client-secret
+DATABRICKS_WAREHOUSE_ID=your-warehouse-id
+SHINY_OAUTH_REDIRECT_URI=http://localhost:8080/callback
+```
+
+For an OAuth application registered without a secret, omit
+`DATABRICKS_CLIENT_SECRET`. The helpers use PKCE in both cases.
+
+The app initially runs `SELECT current_user() AS user`, which lets you confirm
+whose authorization is being used. To load your data, add an SQL query such as:
+
+```text
+APP_SQL=SELECT * FROM main.analytics.sales LIMIT 100
+```
+
+For the optional volume example, add the path to a CSV file the user can read:
+
+```text
+APP_VOLUME_FILE=/Volumes/main/analytics/files/sales.csv
+```
+
+## A complete app
+
+Save this code as `app.R`. SQL is the first option; the others demonstrate DBI,
+Unity Catalog, and volume access with the same user's authorization.
+
+```{r full-app}
+library(shiny)
+library(brickster)
+
+mirai::daemons(2)
+onStop(function() mirai::daemons(0))
+
+secret <- Sys.getenv("DATABRICKS_CLIENT_SECRET")
+config <- db_shiny_config(
+  host = Sys.getenv("DATABRICKS_HOST"),
+  client_id = Sys.getenv("DATABRICKS_CLIENT_ID"),
+  redirect_uri = Sys.getenv("SHINY_OAUTH_REDIRECT_URI"),
+  client_secret = if (nzchar(secret)) secret else NULL,
+  scopes = "all-apis"
+)
+warehouse <- Sys.getenv("DATABRICKS_WAREHOUSE_ID")
+sql <- Sys.getenv("APP_SQL", "SELECT current_user() AS user")
+volume_file <- Sys.getenv("APP_VOLUME_FILE")
+
+read_data <- function(source, host, token, warehouse, sql, volume_file) {
+  switch(
+    source,
+    sql = brickster::db_sql_query(
+      warehouse_id = warehouse,
+      statement = sql,
+      host = host,
+      token = token,
+      disposition = "INLINE",
+      row_limit = 100,
+      show_progress = FALSE
+    ),
+    dbi = {
+      con <- DBI::dbConnect(
+        brickster::DatabricksSQL(),
+        warehouse_id = warehouse,
+        host = host,
+        token = token,
+        disposition = "INLINE",
+        show_progress = FALSE
+      )
+      on.exit(DBI::dbDisconnect(con))
+      DBI::dbGetQuery(con, sql, row_limit = 100)
+    },
+    catalogs = {
+      catalogs <- brickster::db_list_all_pages(
+        brickster::db_uc_catalogs_list,
+        host = host,
+        token = token
+      )
+      tibble::tibble(name = purrr::map_chr(catalogs, "name"))
+    },
+    volume = {
+      if (!nzchar(volume_file)) {
+        stop("Set APP_VOLUME_FILE to a CSV file in a volume.")
+      }
+      path <- fs::file_temp(ext = "csv")
+      on.exit(fs::file_delete(path))
+      brickster::db_volume_read(
+        volume_file,
+        path,
+        host = host,
+        token = token,
+        progress = FALSE
+      )
+      utils::read.csv(path, nrows = 100)
+    }
+  )
+}
+environment(read_data) <- baseenv()
+
+ui <- db_shiny_ui(
+  "auth",
+  config,
+  fluidPage(
+    titlePanel("Databricks data"),
+    actionButton("login", "Sign in"),
+    actionButton("logout", "Sign out"),
+    textOutput("user"),
+    selectInput(
+      "source",
+      "Read data using",
+      c(
+        "SQL query" = "sql",
+        "DBI query" = "dbi",
+        "Unity Catalog" = "catalogs",
+        "Volume CSV" = "volume"
+      )
+    ),
+    actionButton("load", "Load data"),
+    tableOutput("data")
+  )
+)
+
+server <- function(input, output, session) {
+  auth <- db_shiny_server("auth", config, auto_redirect = FALSE)
+  query <- ExtendedTask$new(function(token_promise, generation, source) {
+    promises::then(token_promise, function(token) {
+      data <- mirai::mirai(
+        {
+          library(brickster)
+          read_data(source, host, token, warehouse, sql, volume_file)
+        },
+        read_data = read_data,
+        source = source,
+        host = config$host,
+        token = token,
+        warehouse = warehouse,
+        sql = sql,
+        volume_file = volume_file
+      )
+      promises::then(promises::as.promise(data), function(data) {
+        list(generation = generation, source = source, data = data)
+      })
+    })
+  })
+
+  observeEvent(input$login, auth$login(), ignoreInit = TRUE)
+  observeEvent(input$logout, auth$logout(), ignoreInit = TRUE)
+  observeEvent(
+    input$load,
+    {
+      req(auth$ready())
+      query$invoke(
+        auth$access_token(async = TRUE),
+        auth$generation(),
+        input$source
+      )
+    },
+    ignoreInit = TRUE
+  )
+
+  output$user <- renderText({
+    if (!auth$ready()) {
+      return("Sign in to load your Databricks data.")
+    }
+    claims <- auth$identity()$id_token_claims
+    paste("Signed in:", if (is.null(claims$email)) claims$sub else claims$email)
+  })
+  output$data <- renderTable({
+    req(auth$ready())
+    result <- query$result()
+    req(identical(result$generation, auth$generation()))
+    req(identical(result$source, input$source))
+    head(result$data, 100)
+  })
+}
+
+shinyApp(
+  ui,
+  server,
+  uiPattern = ".*",
+  options = list(host = "127.0.0.1", port = 8080)
+)
+```
+
+Run the app with `shiny::runApp()` and open `http://localhost:8080/`. Sign in,
+leave SQL query selected, and click Load data. Select another option to try its
+data access method. The volume option needs the additional setting above.
+
+The SQL and DBI examples use `INLINE` results for small tables. Use
+`disposition = "EXTERNAL_LINKS"` for larger results. brickster fetches the
+temporary result links without sending Databricks credentials to cloud storage.
+
+## DBI and dbplyr
+
+The worker above uses a fixed token for one operation. For synchronous code
+running in the Shiny session, use the refreshable provider. A DBI connection
+retains it, so later queries obtain current credentials:
+
+```{r}
+con <- DBI::dbConnect(
+  DatabricksSQL(), warehouse_id = warehouse,
+  host = auth$host, token = auth$token_provider(),
+  disposition = "INLINE", show_progress = FALSE
+)
+on.exit(DBI::dbDisconnect(con))
+
+sales <- dplyr::tbl(con, DBI::Id(catalog = "main", schema = "analytics", table = "sales"))
+sales |>
+  dplyr::group_by(region) |>
+  dplyr::summarise(total = sum(amount, na.rm = TRUE)) |>
+  dplyr::collect()
+```
+
+Place this code in a server-side helper function so `on.exit()` closes the
+connection. Calls in the Shiny process are synchronous; use the `ExtendedTask`
+pattern from the full app for queries that may take time. Create and close the
+DBI connection inside the worker using the supplied fixed token.
+
+For filters from Shiny inputs, pass query parameters rather than constructing
+SQL text from the input:
+
+```{r}
+db_sql_query(
+  warehouse_id = warehouse,
+  statement = "SELECT * FROM main.analytics.sales WHERE region = :region LIMIT 100",
+  parameters = list(list(name = "region", type = "STRING", value = region)),
+  host = host, token = token, disposition = "INLINE", show_progress = FALSE
+)
+```
+
+## Other Databricks APIs
+
+The same `token` argument works with brickster's REST wrappers, for example
+`db_uc_tables_list()` and `db_volume_read()`. Choose the API scopes
+allowed by your OAuth registration and the permissions needed by your users.
+An app that only uses SQL can leave `scopes = "sql"`, the configuration default,
+and remove the catalog and volume options from the example.
+
+Job submission is different from querying data directly: a Databricks job
+executes as its configured Run as identity. A user's permission to trigger a
+job does not make its tasks execute as that user. See
+[Databricks job identities](https://docs.databricks.com/aws/en/jobs/privileges).
+
+## Refresh, background tasks, and deployment
+
+`auth$token_provider()` belongs to the current login. Token refresh keeps that
+login's `generation()` unchanged. Signing out or signing in again invalidates
+previous providers; obtain a new provider after the next login.
+
+For a background task, obtain the token asynchronously in the Shiny process,
+then send the fixed token and ordinary query arguments to mirai. The example
+checks `generation()` before showing results, so a result from an earlier login
+does not appear after the user signs out or changes login.
+
+`min_valid_for` is the minimum token lifetime needed to start an operation,
+not a query timeout. Workers cannot refresh tokens. If a token expires during
+a long query, acquire another token in the Shiny session and continue polling
+or fetching the existing statement ID with `db_sql_exec_status()` or
+`db_sql_exec_result()`. Avoid submitting the statement again automatically.
+Signing out does not cancel SQL already submitted to Databricks.
+
+Set up mirai daemons once when the app starts. The example uses two workers;
+adjust this to your host. `onStop()` closes them when the app stops. Database
+connections should be created and closed in the process that uses them.
+
+For deployment, register the app's exact HTTPS callback URL and use it in
+`SHINY_OAUTH_REDIRECT_URI`. The `uiPattern = ".*"` setting lets Shiny route the
+callback subpath. Refer to shinyOAuth's deployment guidance for your hosting
+service's proxy and callback configuration. `reauth_after_seconds` defaults to
+eight hours; adjust it through `db_shiny_server()` when needed.
