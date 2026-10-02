@@ -2,6 +2,8 @@ Run this example with a version of brickster containing the Shiny helpers and
 development shinyOAuth (0.6.1.9000 or later):
 
 ```r
+pak::pak("lukakoning/shinyOAuth")
+pak::local_install(".")
 shiny::runApp("inst/examples/shiny-app", port = 8080)
 ```
 

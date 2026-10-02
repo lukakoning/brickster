@@ -42,6 +42,13 @@ install.packages(c("pak", "shiny", "promises", "mirai"))
 pak::pak("lukakoning/shinyOAuth")
 ```
 
+When using a brickster source checkout, install it before launching the app so
+both the Shiny process and its background workers can load the package:
+
+```{r}
+pak::local_install(".")
+```
+
 Use Shiny 1.8.1 or later. brickster's SQL backend uses the Databricks Statement
 Execution API; this example does not require an ODBC driver.
 
