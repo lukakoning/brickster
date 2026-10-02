@@ -117,6 +117,33 @@ test_that("configuration supplies one workspace with SQL and refresh scopes", {
   )
 })
 
+test_that("invalid app settings are rejected before workspace discovery", {
+  skip_if_not_installed("shinyOAuth", "0.6.1.9000")
+  local_mocked_bindings(
+    db_oauth_provider = function(...) stop("Workspace discovery must not run")
+  )
+  args <- list(
+    host = "workspace.example.com",
+    client_id = "registered-app",
+    redirect_uri = "http://localhost:8080/callback",
+    client_secret = "synthetic-secret"
+  )
+  purrr::walk(c("client_id", "redirect_uri", "client_secret"), function(name) {
+    values <- list("", " ", NA_character_, 123, c("first", "second"))
+    if (name != "client_secret") {
+      values <- c(values, list(NULL))
+    }
+    purrr::walk(values, function(value) {
+      invalid <- args
+      invalid[name] <- list(value)
+      expect_error(
+        do.call(db_shiny_config, invalid),
+        paste0(name, ".*must be one non-empty string")
+      )
+    })
+  })
+})
+
 test_that("providers remain bound to the original login through refresh and logout", {
   local_databricks_discovery()
   config <- shiny_test_config()
@@ -356,6 +383,7 @@ test_that("one session cannot use another session's OAuth provider", {
     session$flushReact()
     state$alice <- auth$token_provider()
     other <- shiny::MockShinySession$new()
+    withr::defer(other$close())
     shiny::withReactiveDomain(
       other,
       shiny::isolate({

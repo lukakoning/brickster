@@ -104,6 +104,26 @@ db_shiny_config <- function(
 ) {
   db_shiny_require()
   host <- db_auth_workspace_host(host)
+  purrr::iwalk(
+    list(
+      client_id = client_id,
+      redirect_uri = redirect_uri,
+      client_secret = client_secret
+    ),
+    function(value, name) {
+      if (name == "client_secret" && is.null(value)) {
+        return(invisible(NULL))
+      }
+      if (
+        !is.character(value) ||
+          length(value) != 1L ||
+          is.na(value) ||
+          !nzchar(trimws(value))
+      ) {
+        cli::cli_abort("{.arg {name}} must be one non-empty string.")
+      }
+    }
+  )
   if (
     !is.numeric(min_valid_for) ||
       length(min_valid_for) != 1L ||

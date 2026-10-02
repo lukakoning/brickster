@@ -1,4 +1,4 @@
-# deferred and parallel requests obtain current independent credentials
+# deferred requests obtain current independent credentials
 
     Code
       print(alice)

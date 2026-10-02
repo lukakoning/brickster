@@ -3,7 +3,7 @@ sign_provider_request <- function(req) {
   do.call(policy$fun, c(list(req = req, cache = policy$cache), policy$params))
 }
 
-test_that("deferred and parallel requests obtain current independent credentials", {
+test_that("deferred requests obtain current independent credentials", {
   state <- new.env(parent = emptyenv())
   state$alice <- "alice-first"
   state$bob <- "bob-first"
@@ -77,7 +77,7 @@ test_that("empty callback results do not create anonymous requests", {
   expect_snapshot(error = TRUE, sign_provider_request(req), cran = TRUE)
 })
 
-test_that("HTTP 401 requests one forced refresh", {
+test_that("HTTP 401 with invalid_token requests one forced refresh", {
   state <- new.env(parent = emptyenv())
   state$refresh <- logical()
   state$headers <- character()
@@ -112,6 +112,60 @@ test_that("HTTP 401 requests one forced refresh", {
   )
   expect_identical(state$refresh, c(FALSE, TRUE))
   expect_identical(state$headers, c("Bearer first", "Bearer refreshed"))
+})
+
+test_that("permission denial does not refresh the user's credentials", {
+  state <- new.env(parent = emptyenv())
+  state$refresh <- logical()
+  provider <- db_token_provider(
+    "workspace.example.com",
+    function(force_refresh = FALSE) {
+      state$refresh <- c(state$refresh, force_refresh)
+      "user-token"
+    }
+  )
+  local_mocked_bindings(
+    req_perform1 = function(req, req_prep, ...) {
+      sign_provider_request(req_prep)
+      httr2::response(
+        status_code = 403L,
+        headers = list(`WWW-Authenticate` = 'Bearer error="insufficient_scope"')
+      )
+    },
+    .package = "httr2"
+  )
+  expect_error(
+    db_sql_warehouse_list(host = "workspace.example.com", token = provider),
+    class = "httr2_http_403"
+  )
+  expect_identical(state$refresh, FALSE)
+})
+
+test_that("a repeatedly invalid token stops after one forced refresh", {
+  state <- new.env(parent = emptyenv())
+  state$refresh <- logical()
+  provider <- db_token_provider(
+    "workspace.example.com",
+    function(force_refresh = FALSE) {
+      state$refresh <- c(state$refresh, force_refresh)
+      "invalid-token"
+    }
+  )
+  local_mocked_bindings(
+    req_perform1 = function(req, req_prep, ...) {
+      sign_provider_request(req_prep)
+      httr2::response(
+        status_code = 401L,
+        headers = list(`WWW-Authenticate` = 'Bearer error="invalid_token"')
+      )
+    },
+    .package = "httr2"
+  )
+  expect_error(
+    db_sql_warehouse_list(host = "workspace.example.com", token = provider),
+    class = "httr2_http_401"
+  )
+  expect_identical(state$refresh, c(FALSE, TRUE))
 })
 
 test_that("fixed worker tokens retain workspace and expiry checks", {
