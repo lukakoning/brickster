@@ -308,6 +308,78 @@ executes as its configured Run as identity. A user's permission to trigger a
 job does not make its tasks execute as that user. See
 [Databricks job identities](https://docs.databricks.com/aws/en/jobs/privileges).
 
+## Long-running queries
+
+`db_sql_query()` submits a statement, waits for it, and returns a data frame.
+For a query you need to resume after an interrupted status check or token
+expiry, use the lower-level statement functions instead. Save the statement ID
+as soon as submission returns; subsequent checks can obtain a fresh token and
+continue the same statement.
+
+For example, add these controls to the app's UI:
+
+```{r long-query-ui}
+bslib::input_task_button("submit", "Submit query")
+bslib::input_task_button("check", "Check query")
+verbatimTextOutput("submitted")
+verbatimTextOutput("query_state")
+```
+
+Inside `server()`, after creating `auth`, use separate tasks for submission and
+status checks:
+
+```{r long-query-server}
+submission <- db_shiny_task(auth, db_sql_exec_query, button = "submit")
+poll <- db_shiny_task(auth, db_sql_exec_status, button = "check")
+saved_statement <- reactiveVal(NULL)
+
+observeEvent(auth$generation(), saved_statement(NULL), ignoreNULL = FALSE)
+observeEvent(input$submit, {
+  if (submission$invoke(
+    statement = sql, warehouse_id = warehouse,
+    wait_timeout = "0s", disposition = "INLINE", row_limit = 100
+  )) {
+    saved_statement(NULL)
+  }
+}, ignoreInit = TRUE)
+observeEvent(submission$status(), {
+  req(submission$status() == "success")
+  saved_statement(list(
+    id = submission$result()$statement_id,
+    generation = auth$generation()
+  ))
+})
+observeEvent(input$check, {
+  saved <- saved_statement()
+  req(saved, identical(saved$generation, auth$generation()))
+  poll$invoke(statement_id = saved$id)
+}, ignoreInit = TRUE)
+
+output$submitted <- renderPrint(submission$result())
+output$query_state <- renderPrint({
+  saved <- saved_statement()
+  req(saved, identical(saved$generation, auth$generation()))
+  result <- poll$result()
+  req(identical(result$statement_id, saved$id))
+  result
+})
+```
+
+Click Submit query once, then Check query to inspect its progress. Each check
+acquires current credentials for the same login. A failed check leaves the
+saved ID available, so you can check again without resubmitting. Signing out
+clears the app's saved ID; a new login does not inherit the earlier query.
+
+A successful status response includes the result manifest and first result
+chunk. For subsequent chunks, create another task with
+`db_shiny_task(auth, db_sql_exec_result)` and invoke it with
+`statement_id = saved$id` and `chunk_index = result$result$next_chunk_index`,
+using the same login checks. These functions return the API response lists;
+`db_sql_query()` remains the simpler choice when you just need a data frame.
+
+If submission itself fails before returning an ID, the app cannot tell whether
+Databricks accepted the statement. Do not resubmit automatically.
+
 ## Refresh, background tasks, and deployment
 
 `auth$token_provider()` belongs to the current login. Token refresh keeps that
@@ -320,11 +392,9 @@ checks `generation()` before showing results, so a result from an earlier login
 does not appear after the user signs out or changes login.
 
 `min_valid_for` is the minimum token lifetime needed to start an operation,
-not a query timeout. Workers cannot refresh tokens. If a token expires during
-a long query, acquire another token in the Shiny session and continue polling
-or fetching the existing statement ID with `db_sql_exec_status()` or
-`db_sql_exec_result()`. Avoid submitting the statement again automatically.
-Signing out does not cancel SQL already submitted to Databricks.
+not a query timeout. Workers cannot refresh tokens. For queries that may outlast
+a token, use the statement-ID workflow above. Signing out does not cancel SQL
+already submitted to Databricks.
 
 Set up mirai daemons once when the app starts. The example uses two workers;
 adjust this to your host. `onStop()` closes them when the app stops. Database
